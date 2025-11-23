@@ -3,25 +3,6 @@ import { crypto } from "https://deno.land/std@0.177.0/crypto/mod.ts";
 
 const kv = await Deno.openKv();
 
-// --- CONFIGURATION (ဒီမှာ Key ပြောင်းပါ) ---
-const API_KEY = "AIzaSyDRIIEdpfFnE5Qoj4npwidQyT596U8hXpw"; 
-const AI_MODELS = ["gemini-2.0-flash", "gemini-1.5-pro", "gemini-2.0-flash"];
-
-const SYSTEM_INSTRUCTION = `
-You are "Soe Kyaw Win AI", a smart and friendly assistant.
-
-**ROLES:**
-1. **2D Expert:** Use [MARKET DATA] & [HISTORY].
-   - Formula 1 (5/10 Diff): "FORMULA_1".
-   - Formula 2 (Set/Value): "FORMULA_2".
-   - Missing Numbers: Analyze [PAST HISTORY].
-   - Doubles: Check [DAY_INFO].
-2. **General Assistant:** Answer Football, Health, Knowledge freely.
-
-**TONE:** Friendly, Casual ("ကွ", "ဟ", "ရောင်"), Helpful.
-**LANGUAGE:** Myanmar (Burmese) with correct spelling.
-`;
-
 // --- HELPER FUNCTIONS ---
 async function hashPassword(p: string, s: string) {
   const data = new TextEncoder().encode(p + s);
@@ -30,27 +11,26 @@ async function hashPassword(p: string, s: string) {
 }
 function generateId() { return crypto.randomUUID(); }
 
-// --- AI FORMULAS ---
+// --- တွက်နည်း (၁) - ၅ ပြည့် ၁၀ ပြည့် ---
 function calculateFormula5_10(twod: string) {
     try {
         const digits = twod.split('').map(Number);
         let results = [];
-        let originalSums = [];
         for (let n of digits) {
             let diff5 = (5 - (n % 5));
             let diff10 = (10 - (n % 10));
             if(diff10===10) diff10=0;
+            
             let to5 = (diff5 + 1) % 10;
             let to10 = (diff10 + 1) % 10;
-            originalSums.push(diff5); originalSums.push(diff10);
+            
             results.push(to5); results.push(to10);
         }
-        let finalSet = new Set(results);
-        if (finalSet.size < 3) { for (let n of originalSums) { finalSet.add(n); if (finalSet.size >= 3) break; } }
-        return Array.from(finalSet).join(", ");
-    } catch (e) { return null; }
+        return [...new Set(results)].join(", ");
+    } catch (e) { return "Error"; }
 }
 
+// --- တွက်နည်း (၂) - Set/Value ---
 function calculateFormulaSetVal(setStr: string, valStr: string) {
     try {
         const s = setStr.replace(/,/g, ""); const v = valStr.replace(/,/g, ""); 
@@ -63,47 +43,47 @@ function calculateFormulaSetVal(setStr: string, valStr: string) {
             originalSums.push(sum); incremented.push(inc);
         }
         let finalSet = new Set(incremented);
-        if (finalSet.size < 3) { for (let num of originalSums) { finalSet.add(num); if (finalSet.size >= 3) break; } }
+        // ၃ လုံးမပြည့်ရင် မူရင်းပေါင်းလဒ် ပြန်ထည့်
+        if (finalSet.size < 3) {
+            for (let num of originalSums) { finalSet.add(num); if (finalSet.size >= 3) break; }
+        }
         return Array.from(finalSet).join(", ");
-    } catch (e) { return null; }
+    } catch (e) { return "N/A"; }
 }
 
-async function getAIContext() {
-    let context = "";
+// --- BOT LOGIC (Data Fetching) ---
+async function getBotPredictions() {
     try {
         const res = await fetch("https://api.thaistock2d.com/live");
         const data = await res.json();
-        const now = new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon", hour12: true, dateStyle: 'full', timeStyle: 'short' });
-        
-        context += `[CURRENT TIME]: ${now}\n`;
-        const dayName = now.split(',')[0];
-        if(dayName === 'Monday' || dayName === 'Friday') context += `[DAY_INFO]: Today is ${dayName}. Warn user about Doubles (အပူး)!\n`;
+        const date = data.live?.date || new Date().toISOString().split('T')[0];
 
-        let mNum = null, eNum = null;
-        if (data.result && data.result[1]) mNum = data.result[1].twod;
-        if (data.result && (data.result[3] || data.result[2])) eNum = (data.result[3] || data.result[2]).twod;
+        let morningNum = null;
+        let eveningNum = null;
+        let setValData = null;
 
-        if (eNum) {
-            context += `STATUS: Evening Result (${eNum}) is OUT.\n`;
-            context += `FORMULA_1 (FOR TOMORROW): [${calculateFormula5_10(eNum)}]\n`;
-        } else if (mNum) {
-            context += `STATUS: Morning Result (${mNum}) is OUT.\n`;
-            context += `FORMULA_1 (FOR EVENING): [${calculateFormula5_10(mNum)}]\n`;
+        // Data Extraction
+        if (data.result && data.result[1]) {
+            morningNum = data.result[1].twod;
             if (data.result[1].set && data.result[1].value) {
-                context += `FORMULA_2 (Set/Val - FOR EVENING): [${calculateFormulaSetVal(data.result[1].set, data.result[1].value)}]\n`;
+                setValData = { set: data.result[1].set, val: data.result[1].value };
             }
-        } else {
-            context += `STATUS: Market Not Open Yet.\n`;
+        }
+        if (data.result && (data.result[3] || data.result[2])) {
+            const ev = data.result[3] || data.result[2];
+            eveningNum = ev.twod;
         }
 
-        context += `\n[PAST HISTORY]:\n`;
-        const iter = kv.list({ prefix: ["history"] }, { limit: 10, reverse: true });
-        for await (const entry of iter) {
-            const val = entry.value as any;
-            context += `${val.date}: ${val.morning}, ${val.evening}\n`;
-        }
-    } catch (e) { context += "Data Unavailable.\n"; }
-    return context;
+        return { 
+            date, 
+            morningNum, 
+            eveningNum, 
+            setValData,
+            status: "ok" 
+        };
+    } catch (e) {
+        return { status: "error" };
+    }
 }
 
 // --- CRON JOB ---
@@ -145,7 +125,7 @@ serve(async (req) => {
       return new Response(`self.addEventListener('install',e=>e.waitUntil(caches.open('v2d-v1').then(c=>c.addAll(['/','/manifest.json']))));self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>caches.match(e.request))));`, { headers: { "content-type": "application/javascript" } });
   }
 
-  // --- UI HEAD ---
+  // --- UI TEMPLATES ---
   const commonHead = `
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <link rel="manifest" href="/manifest.json">
@@ -188,6 +168,7 @@ serve(async (req) => {
     }
     function delBet(id) { Swal.fire({title:'Delete?', icon:'warning', showCancelButton:true, confirmButtonColor:'#d33'}).then(r => { if(r.isConfirmed) { showLoad(); const fd = new FormData(); fd.append('id', id); fetch('/admin/delete_bet', {method:'POST', body:fd}).then(res=>res.json()).then(d=>{ hideLoad(); location.reload(); }); } }); }
   </script>`;
+
   const loaderHTML = `<div id="loader" class="fixed inset-0 bg-black/90 z-[9999] hidden flex items-center justify-center"><div class="loader w-10 h-10"></div></div>`;
   const navHTML = `
   <div class="fixed bottom-0 w-full glass border-t border-white/10 pb-safe flex justify-around items-center h-16 z-40">
@@ -202,7 +183,7 @@ serve(async (req) => {
   const currentUser = userCookie ? decodeURIComponent(userCookie.split("=")[1].trim()) : null;
   const isAdmin = currentUser === "admin";
 
-  // --- AUTH ROUTES ---
+  // --- AUTH ROUTES (POST) ---
   if (req.method === "POST") {
       if (url.pathname === "/register") {
         const form = await req.formData();
@@ -245,7 +226,7 @@ serve(async (req) => {
     return new Response(null, { status: 303, headers: h });
   }
 
-  // --- LOGIN UI ---
+  // --- LOGIN UI (If not logged in) ---
   if (!currentUser) {
     return new Response(`<!DOCTYPE html><html><head><title>Login</title>${commonHead}</head><body class="flex items-center justify-center min-h-screen bg-[url('https://images.unsplash.com/photo-1605218427360-36390f8584b0')] bg-cover bg-center">
     <div class="absolute inset-0 bg-black/80"></div>${loaderHTML}
@@ -267,29 +248,54 @@ serve(async (req) => {
   const avatar = uData.avatar || "";
   const dateStr = new Date().toLocaleString("en-US", {timeZone:"Asia/Yangon", day:'numeric', month:'short', year:'numeric'});
 
-  // ACTIONS
+  // BOT PREDICTION API
+  if (req.method === "POST" && url.pathname === "/bot_predict") {
+      try {
+          const { type } = await req.json();
+          const botData = await getBotPredictions();
+          
+          let resultHtml = "";
+          const title = type === 'morning' ? 'Morning Prediction' : 'Evening Prediction';
+          
+          if (type === 'morning') {
+             // Morning: Use Yesterday Evening (if exists) or Current Evening (if exists)
+             // Logic: Morning prediction uses the "previous result".
+             const baseNum = botData.eveningNum || botData.morningNum || "No Data";
+             const pred = calculateFormula5_10(baseNum);
+             resultHtml = `
+                <div class="text-center space-y-3">
+                    <div class="text-xs text-gray-400">Based on: ${baseNum}</div>
+                    <div class="bg-slate-800 p-3 rounded-xl border border-yellow-500/30">
+                        <div class="text-yellow-500 font-bold text-xs mb-1">FORMULA 1 (5/10 Diff)</div>
+                        <div class="text-2xl font-bold text-white tracking-widest">${pred}</div>
+                    </div>
+                    <div class="text-[10px] text-gray-500">For Next Morning</div>
+                </div>`;
+          } else {
+             // Evening: Use Morning Data
+             const baseNum = botData.morningNum || "No Data";
+             const pred1 = calculateFormula5_10(baseNum);
+             const pred2 = botData.setValData ? calculateFormulaSetVal(botData.setValData.set, botData.setValData.val) : "Wait for Set/Value";
+             resultHtml = `
+                <div class="text-center space-y-3">
+                    <div class="text-xs text-gray-400">Based on Morning: ${baseNum}</div>
+                    <div class="bg-slate-800 p-3 rounded-xl border border-yellow-500/30">
+                        <div class="text-yellow-500 font-bold text-xs mb-1">FORMULA 1</div>
+                        <div class="text-2xl font-bold text-white tracking-widest">${pred1}</div>
+                    </div>
+                    <div class="bg-slate-800 p-3 rounded-xl border border-blue-500/30">
+                        <div class="text-blue-400 font-bold text-xs mb-1">FORMULA 2 (Set/Value)</div>
+                        <div class="text-2xl font-bold text-white tracking-widest">${pred2}</div>
+                    </div>
+                    <div class="text-[10px] text-gray-500">For This Evening</div>
+                </div>`;
+          }
+
+          return new Response(JSON.stringify({ html: resultHtml, title }), { headers: { "Content-Type": "application/json" } });
+      } catch (e) { return new Response(JSON.stringify({ error: "Error" }), { headers: { "Content-Type": "application/json" } }); }
+  }
+
   if (req.method === "POST") {
-    if (url.pathname === "/chat") {
-        try {
-            const { message } = await req.json();
-            const aiContext = await getAIContext();
-            const fullPrompt = `${SYSTEM_INSTRUCTION}\n${aiContext}\n[USER MESSAGE]\n${message}`;
-            let reply = "အင်တာနက်လိုင်း အခက်အခဲရှိနေပါသည် ခင်ဗျာ။";
-            let success = false;
-            for (const model of AI_MODELS) {
-                if(success) break;
-                try {
-                    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${API_KEY}`, {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: fullPrompt }] }] })
-                    });
-                    const data = await res.json();
-                    if (!data.error && data.candidates) { reply = data.candidates[0].content.parts[0].text; success = true; }
-                } catch (e) {}
-            }
-            return new Response(JSON.stringify({ reply }), { headers: { "Content-Type": "application/json" } });
-        } catch (e) { return new Response(JSON.stringify({ reply: "Connection Error" }), { headers: { "Content-Type": "application/json" } }); }
-    }
     if (url.pathname === "/update_avatar") {
         const form = await req.formData(); const img = form.get("avatar")?.toString();
         if(img) { await kv.set(["users", currentUser], { ...uData, avatar: img }); return new Response(JSON.stringify({status:"ok"})); }
@@ -331,6 +337,7 @@ serve(async (req) => {
         if (!commit.ok) return new Response(JSON.stringify({ status: "retry" }));
         return new Response(JSON.stringify({ status: "success", voucher: { id: batchId, user: currentUser, date: dateStr, time: txTime, nums, amt, total: nums.length * amt } }));
     }
+    // Admin Actions
     if (isAdmin) {
         const form = await req.formData();
         if (url.pathname === "/admin/topup") {
@@ -352,58 +359,58 @@ serve(async (req) => {
     }
   }
 
-  // --- AI CHAT PAGE ---
-  if (url.pathname === "/ai") {
+  // --- BOT PAGE (REPLACES CHAT) ---
+  if (url.pathname === "/bot") {
       return new Response(`
-        <!DOCTYPE html><html><head><title>Soe Kyaw Win AI</title>${commonHead.replace(/<style>[\s\S]*?<\/style>/, `<style>
+        <!DOCTYPE html><html><head><title>Soe Kyaw Win Bot</title>${commonHead.replace(/<style>[\s\S]*?<\/style>/, `<style>
             body { background: #0f172a; color: white; font-family: sans-serif; }
-            .chat-container { height: calc(100vh - 130px); overflow-y: auto; padding: 20px; scroll-behavior: smooth; }
-            .msg { max-width: 85%; margin-bottom: 15px; padding: 10px 16px; border-radius: 18px; font-size: 14px; line-height: 1.6; position: relative; }
-            .user { background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; align-self: flex-end; margin-left: auto; border-bottom-right-radius: 4px; }
-            .ai { background: #1e293b; color: #e2e8f0; align-self: flex-start; margin-right: auto; border-bottom-left-radius: 4px; border: 1px solid #334155; }
-            .time-stamp { font-size: 10px; margin-top: 4px; opacity: 0.7; text-align: right; display: block; }
-            .typing { font-size: 12px; color: #94a3b8; margin-left: 20px; display: none; }
+            .btn-box { background: linear-gradient(135deg, #1e293b, #0f172a); border: 1px solid #334155; border-radius: 20px; padding: 20px; text-align: center; box-shadow: 0 4px 15px rgba(0,0,0,0.3); transition: all 0.2s; }
+            .btn-box:active { transform: scale(0.98); }
         </style>`)}</head>
         <body class="flex flex-col h-screen">
-          <div class="bg-slate-900 p-4 shadow-xl border-b border-slate-800 z-10 flex justify-between items-center">
-            <div class="flex items-center gap-3">
-                <a href="/" class="text-gray-400 hover:text-white"><i class="fas fa-arrow-left text-xl"></i></a>
-                <div class="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white font-bold shadow-lg"><i class="fas fa-robot"></i></div>
-                <div><h1 class="font-bold text-lg text-white">Soe Kyaw Win AI</h1><div class="flex items-center gap-1 text-[10px] text-green-400 font-bold"><span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span> Online</div></div>
-            </div>
-            <button onclick="clearChat()" class="text-gray-400 hover:text-red-500 p-2"><i class="fas fa-trash-alt"></i></button>
+          <div class="bg-slate-900 p-4 shadow-xl border-b border-slate-800 z-10 flex items-center gap-3">
+             <a href="/" class="text-gray-400 hover:text-white"><i class="fas fa-arrow-left text-xl"></i></a>
+             <h1 class="font-bold text-lg text-white">Soe Kyaw Win Bot</h1>
           </div>
-          <div id="chatBox" class="chat-container flex flex-col"></div>
-          <div id="typing" class="typing"><i class="fas fa-circle-notch fa-spin text-blue-500 mr-1"></i> ဖြေကြားနေသည်...</div>
-          <div class="p-3 bg-slate-900 border-t border-slate-800 flex gap-2 items-center pb-6">
-            <input id="msgInput" type="text" placeholder="သိလိုရာ မေးမြန်းပါ..." class="flex-1 bg-slate-800 text-white rounded-full px-5 py-3 focus:outline-none focus:ring-1 focus:ring-blue-500 border border-slate-700">
-            <button onclick="sendMsg()" class="bg-gradient-to-r from-blue-500 to-indigo-600 text-white w-12 h-12 rounded-full flex items-center justify-center shadow-lg"><i class="fas fa-paper-plane text-lg"></i></button>
+          
+          <div class="p-6 space-y-4 overflow-y-auto flex-1">
+             <div class="text-center mb-6"><i class="fas fa-robot text-5xl text-blue-500 mb-2"></i><p class="text-gray-400 text-sm">Choose prediction type</p></div>
+             
+             <div onclick="getPredict('morning')" class="btn-box group">
+                 <div class="w-12 h-12 rounded-full bg-yellow-500/20 flex items-center justify-center mx-auto mb-2 group-hover:bg-yellow-500/40 transition"><i class="fas fa-sun text-yellow-500 text-xl"></i></div>
+                 <h2 class="font-bold text-lg">Morning Prediction</h2>
+                 <p class="text-xs text-gray-500">Formula 1 Only</p>
+             </div>
+
+             <div onclick="getPredict('evening')" class="btn-box group">
+                 <div class="w-12 h-12 rounded-full bg-purple-500/20 flex items-center justify-center mx-auto mb-2 group-hover:bg-purple-500/40 transition"><i class="fas fa-moon text-purple-500 text-xl"></i></div>
+                 <h2 class="font-bold text-lg">Evening Prediction</h2>
+                 <p class="text-xs text-gray-500">Formula 1 & Formula 2</p>
+             </div>
           </div>
+          
           <script>
-            const chatBox = document.getElementById('chatBox'); const input = document.getElementById('msgInput'); const typing = document.getElementById('typing');
-            let chatHistory = JSON.parse(localStorage.getItem('skw_ai_final')) || [];
-            function getMMTime() { return new Date().toLocaleTimeString('en-US', { timeZone: 'Asia/Yangon', hour: 'numeric', minute: '2-digit', hour12: true }); }
-            if (chatHistory.length === 0) { addBubble("မင်္ဂလာပါ ဘာကူညီရမလဲဗျ။", 'ai', false, getMMTime()); } else { chatHistory.forEach(c => addBubble(c.text, c.type, false, c.time)); }
-            input.addEventListener("keypress", function(e) { if(e.key === "Enter") sendMsg(); });
-            function saveChat(text, type, time) { chatHistory.push({ text, type, time }); localStorage.setItem('skw_ai_final', JSON.stringify(chatHistory)); }
-            function clearChat() { if(confirm('ဖျက်မှာသေချာလား?')) { localStorage.removeItem('skw_ai_final'); chatHistory = []; chatBox.innerHTML = ''; addBubble("မင်္ဂလာပါ ဘာကူညီရမလဲဗျ။", 'ai', false, getMMTime()); } }
-            async function sendMsg() {
-                const text = input.value.trim(); if(!text) return;
-                const time = getMMTime(); addBubble(text, 'user', true, time); input.value = ''; typing.style.display = 'block'; chatBox.scrollTop = chatBox.scrollHeight;
+            async function getPredict(type) {
+                showLoad();
                 try {
-                    const res = await fetch('/chat', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ message: text }) });
-                    const data = await res.json(); typing.style.display = 'none';
-                    let cleanReply = data.reply.replace(/\\*\\*(.*?)\\*\\*/g, '<b>$1</b>').replace(/\\n/g, '<br>');
-                    addBubble(cleanReply, 'ai', true, getMMTime());
-                } catch(e) { typing.style.display = 'none'; addBubble("Error: " + e.message, 'ai', false, getMMTime()); }
+                    const res = await fetch('/bot_predict', { 
+                        method: 'POST', headers: {'Content-Type':'application/json'}, 
+                        body: JSON.stringify({ type }) 
+                    });
+                    const data = await res.json();
+                    hideLoad();
+                    if(data.html) {
+                        Swal.fire({
+                            title: data.title,
+                            html: data.html,
+                            background: '#1e293b', color: '#fff',
+                            confirmButtonColor: '#3b82f6'
+                        });
+                    } else { Swal.fire('Error', 'Failed', 'error'); }
+                } catch(e) { hideLoad(); Swal.fire('Error', 'Connection', 'error'); }
             }
-            function addBubble(text, type, save, time) {
-                if (save) saveChat(text, type, time);
-                const div = document.createElement('div'); div.className = 'msg ' + type + ' animate-[fadeIn_0.3s_ease-out]';
-                div.innerHTML = \`\${text} <span class="time-stamp">\${time}</span>\`;
-                chatBox.appendChild(div); chatBox.scrollTop = chatBox.scrollHeight;
-            }
-          </script></body></html>
+          </script>
+        </body></html>
       `, { headers: { "content-type": "text/html; charset=utf-8" } });
   }
 
@@ -488,9 +495,9 @@ serve(async (req) => {
 
         ${sys.tip ? `<div class="glass p-4 rounded-xl border-l-4 border-yellow-500 flex items-center gap-3"><div class="bg-yellow-500/20 p-2 rounded-full"><i class="fas fa-lightbulb text-yellow-500"></i></div><div class="flex-1"><div class="flex justify-between items-center text-[10px] text-gray-400 uppercase font-bold"><span>Daily Tip</span><span>${dateStr}</span></div><div class="font-bold text-sm text-white">${sys.tip}</div></div></div>` : ''}
 
-        <a href="/ai" onclick="showLoad()" class="block w-full bg-gradient-to-r from-blue-500 to-indigo-600 p-4 rounded-2xl shadow-lg shadow-blue-600/20 flex items-center justify-center gap-3 active:scale-95 transition-transform">
+        <a href="/bot" onclick="showLoad()" class="block w-full bg-gradient-to-r from-blue-500 to-indigo-600 p-4 rounded-2xl shadow-lg shadow-blue-600/20 flex items-center justify-center gap-3 active:scale-95 transition-transform">
             <div class="bg-white/20 p-2 rounded-full"><i class="fas fa-robot text-xl text-white"></i></div>
-            <span class="font-bold text-white">AI ဆရာ (Chat)</span>
+            <span class="font-bold text-white">Auto Bot (Chat မလိုပါ)</span>
         </a>
 
         ${!isAdmin ? `<button onclick="openBet()" class="w-full gold-bg p-4 rounded-2xl shadow-lg shadow-yellow-600/20 flex items-center justify-center gap-2 active:scale-95 transition-transform"><i class="fas fa-plus-circle text-xl"></i><span class="font-bold">BET NOW (ထိုးမည်)</span></button>` : ''}
