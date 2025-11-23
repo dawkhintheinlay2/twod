@@ -4,8 +4,8 @@ import { crypto } from "https://deno.land/std@0.177.0/crypto/mod.ts";
 const kv = await Deno.openKv();
 
 // --- CONFIGURATION ---
-const API_KEY = "AIzaSyClhO1S_DyCvZMzfDj2R28ivYx8vVhiZYc"; 
-const AI_MODELS = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro"];
+const API_KEY = "AIzaSyDRIIEdpfFnE5Qoj4npwidQyT596U8hXpw"; 
+const AI_MODELS = ["gemini-2.0-flash", "gemini-2.0-flash", "gemini-2.0-flash"];
 
 const SYSTEM_INSTRUCTION = `
 You are "Soe Kyaw Win AI".
