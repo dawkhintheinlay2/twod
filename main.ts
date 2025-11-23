@@ -1,7 +1,7 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 
 // မိတ်ဆွေရဲ့ Key (Active ဖြစ်နေပါပြီ)
-const API_KEY = "AIzaSyClhO1S_DyCvZMzfDj2R28ivYx8vVhiZYc"; 
+const API_KEY = "AIzaSyDRIIEdpfFnE5Qoj4npwidQyT596U8hXpw"; 
 
 // သုံးမည့် Model (စောနက စမ်းလို့ရသွားတဲ့ Model)
 const MODEL_NAME = "gemini-2.0-flash";
